@@ -1,23 +1,25 @@
 {
   "name": "dialogflow-fun",
   "version": "1.0.0",
-  "main": "index.js",
   "license": "MIT",
   "dependencies": {
     "@justfixnyc/geosearch-requester": "0.4.0",
+    "firebase-admin": "^9.4.1",
+    "firebase-functions": "^3.11.0",
+    "node-fetch": "^2.6.1"
+  },
+  "devDependencies": {
     "@types/express": "^4.17.9",
     "@types/node-fetch": "^2.5.7",
     "body-parser": "^1.19.0",
     "express": "^4.17.1",
-    "node-fetch": "^2.6.1",
     "rollup": "^2.33.3",
-    "rollup-plugin-commonjs": "^10.1.0",
-    "rollup-plugin-node-resolve": "^5.2.0",
-    "rollup-plugin-replace": "^2.2.0",
-    "typescript": "^4.1.2"
+    "tslib": "^2.0.3",
+    "typescript": "^4.1.2",
+    "@rollup/plugin-typescript": "^6.1.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && rollup -c",
     "watch": "tsc -w"
   }
 }
