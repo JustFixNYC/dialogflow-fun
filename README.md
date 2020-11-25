@@ -1,12 +1,19 @@
+This is an attempt to create a DialogFlow fullfillment
+serverless function.
+
 ## Quick start
+
+It's easiest to develop locally and point DialogFlow at your
+local server (using e.g. ngrok as a tunnel).
+
+In one terminal, run:
 
 ```
 yarn
-yarn build
-node server.js
+yarn watch
 ```
 
-To watch for changes, run `yarn watch`.
+Then in another terminal, run `node server.js`.
 
 ## Serverless deployment
 
