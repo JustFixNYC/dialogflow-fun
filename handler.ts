@@ -1,10 +1,6 @@
 import { geoSearch } from "@justfixnyc/geosearch-requester/commonjs";
 import fetch from "node-fetch";
 
-if (!globalThis.fetch) {
-  (globalThis as any).fetch = fetch;
-}
-
 export type DialogflowWebhookRequest = {
   queryResult: {
     queryText: string;
@@ -103,7 +99,9 @@ export async function handleRequest(dfReq: DialogflowWebhookRequest): Promise<Di
   if (loc['subadmin-area']) {
     addr += ', ' + loc['subadmin-area'];
   }
-  const geoResult = await geoSearch(addr);
+  const geoResult = await geoSearch(addr, {
+    fetch: fetch as any
+  });
 
   let text = "Unfortunately, I was unable to find any information about the landlord at that address.";
 
