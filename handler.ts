@@ -11,15 +11,25 @@ export type DialogFlowLocation = {
 }
 
 export type DialogflowWebhookRequest = {
-  queryResult: {
-    queryText: string;
-    parameters: {
-      location: DialogFlowLocation
-    };
-    intent: {
-      displayName: string
-    }
+  session: string,
+  queryResult: QueryResult
+};
+
+export type QueryResult = {
+  queryText: string;
+  parameters: {
+    location: DialogFlowLocation
+  };
+  intent: {
+    displayName: string
   }
+  outputContexts?: OutputContext[]
+};
+
+export type OutputContext = {
+  name: string,
+  lifespanCount: number,
+  parameters: {}
 };
 
 export type DialogflowWebhookResponse = {
@@ -27,8 +37,26 @@ export type DialogflowWebhookResponse = {
     text: {
       text: string[]
     }
-  }[]
+  }[],
+  outputContexts?: OutputContext[]
 };
+
+function createDialogflowWebhookResponse(text: string, outputContexts?: OutputContext[]): DialogflowWebhookResponse {
+  let response: DialogflowWebhookResponse = 
+  {
+    fulfillmentMessages: [
+      {
+        text: {
+          text: [text]
+        }
+      }
+    ],
+  };
+  if (outputContexts) {
+    response.outputContexts = outputContexts;
+  }
+  return response;
+}
 
 function splitBBL(bbl: string) {
   const bblArr = bbl.split("");
@@ -38,12 +66,22 @@ function splitBBL(bbl: string) {
   return { boro, block, lot };
 }
 
-async function fetchLandlordInfo(bbl: string): Promise<SearchResults> {
+async function fetchLandlordInfo(bbl: string): Promise<LandlordSearchResults> {
   const url = new URL('https://wow-django.herokuapp.com/api/address');
   const params = splitBBL(bbl);
   url.searchParams.append('borough', params.boro);
   url.searchParams.append('block', params.block);
   url.searchParams.append('lot', params.lot);
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Got HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function fetchHousingTypePrediction(bbl: string): Promise<HousingTypeResults> {
+  const url = new URL('https://wow-django.herokuapp.com/api/address/housingtype');
+  url.searchParams.append('bbl', bbl);
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Got HTTP ${res.status}`);
@@ -96,15 +134,19 @@ type AddressRecord = {
   zip: string | null;
 };
 
-type SearchResults = {
+type LandlordSearchResults = {
   addrs: AddressRecord[];
   geosearch?: GeoSearchData;
 };
 
+type HousingTypeResults = {
+  result: string;
+}
+
 function classifyIntent(intentDisplayName: string): string {
-  if (intentDisplayName.includes('ConfirmAddress')) {
+  if (intentDisplayName.endsWith('ConfirmAddress')) {
     return 'confirm-address';
-  } else if (intentDisplayName.includes('HousingType')) {
+  } else if (intentDisplayName.includes('HousingTypeUnsure') && intentDisplayName.endsWith('ConfirmAddress - yes')) {
     return 'predict-housing-type';
   } else {
     return 'get-landlord-info';
@@ -122,7 +164,13 @@ function formatAddress(location: DialogFlowLocation): string {
   return addr;
 }
 
-async function getLandlordInfoResponse(geoResult: GeoSearchResults): Promise<string> {
+async function getLandlordInfoResponse(queryResult: QueryResult): Promise<DialogflowWebhookResponse> {
+  const loc = queryResult.parameters.location;
+  let addr = formatAddress(loc);
+  const geoResult = await geoSearch(addr, {
+    fetch: fetch as any
+  });
+
   let text = "Unfortunately, I was unable to find any information about the landlord at that address.";
 
   if (geoResult.features.length > 0) {
@@ -142,76 +190,98 @@ async function getLandlordInfoResponse(geoResult: GeoSearchResults): Promise<str
       text += ` Learn more at https://whoownswhat.justfix.nyc/bbl/${bbl}.`;
     }
   }
-  return text;
+  return createDialogflowWebhookResponse(text);
 }
 
-function confirmAddressResponse(geoResult: GeoSearchResults): string {
+async function confirmAddressResponse(queryResult: QueryResult): Promise<DialogflowWebhookResponse> {
+  const loc = queryResult.parameters.location;
+  let addr = formatAddress(loc);
+  const geoResult = await geoSearch(addr, {
+    fetch: fetch as any
+  });
+
   let text = "I couldn't find that address. Can you tell me your full street address (no apartment number), borough, and zip? e.g. '150 Court St, Brooklyn, 11201'";
   if (geoResult.features.length > 0) {
     const feature = geoResult.features[0];
     const addr = `${feature.properties.name}, ${feature.properties.borough}`;
     text = `I found ${addr}. Is that right?`
   }
-  return text;
+  return createDialogflowWebhookResponse(text);
 }
 
-async function predictHousingTypeResponse(geoResult: GeoSearchResults): Promise<string> {
+async function predictHousingTypeResponse(queryResult: QueryResult, session: string): Promise<DialogflowWebhookResponse> {
   let text = "It doesn't look like your building has any rent regulated units.";
-  // set to market rate as default?
+
+  // TODO: Find a way to get the georesult, which should be the already-found & validated address, from
+  // the response to the last query (since when this gets called, the last thing the user has said is 'yes'
+  // to indicate the address we have for them is oK). Do we have to store it on the server side? That would make
+  // this stateful - which i guess is oK.
+
+  let predictedHousingType = '';
   if (geoResult.features.length > 0) {
     const feature = geoResult.features[0];
     const bbl = feature.properties.pad_bbl;
-    const addr = `${feature.properties.name}, ${feature.properties.borough}`;
-    const predictedHousingType = await predictHousingType(bbl);
+    predictedHousingType = (await fetchHousingTypePrediction(bbl)).result;
+    console.log(predictedHousingType);
     text = `Looks like you might live in ${predictedHousingType}`;
-    // make sure to also set follow up intent so it goes to the correct housing type intent.
   }
-  return text;
+
+  let outputContexts = [
+    {
+      name: `${session}/contexts/housing-type-found`,
+      lifespanCount: 10,
+      parameters: {
+        'housing-type': predictedHousingType
+      }
+    },
+  ];
+  return createDialogflowWebhookResponse(text, outputContexts);
 }
 
 
 export async function handleRequest(dfReq: DialogflowWebhookRequest): Promise<DialogflowWebhookResponse> {
   console.log(dfReq.queryResult);
-
-  const loc = dfReq.queryResult.parameters.location;
-  let addr = formatAddress(loc);
-  const geoResult = await geoSearch(addr, {
-    fetch: fetch as any
-  });
-
-  let responseText = '';
-  switch(classifyIntent(dfReq.queryResult.intent.displayName)) {
-    case 'confirm-address':
-      responseText = confirmAddressResponse(geoResult);
-      break;
-    case 'predict-housing-type':
-      predictHousingTypeResponse(geoResult).then(
-        res => {
-          responseText = res;
-        }
-      );
-      break;
-    case 'get-landlord-info':
-      getLandlordInfoResponse(geoResult).then(
-        res => {
-          responseText = res;
-        }
-      );
-      break;
-    default:
-      responseText = "I don't know how to handle this yet";
-      break;
+  if (dfReq.queryResult.outputContexts) {
+    for (let i = 0; i<dfReq.queryResult.outputContexts.length; i++) {
+      console.log(dfReq.queryResult.outputContexts[i].name);
+      console.log(' and the parameter value is ');
+      console.log(dfReq.queryResult.outputContexts[i].parameters);
+    }
   }
 
 
 
-  const dfRes: DialogflowWebhookResponse = {
-    fulfillmentMessages: [{
-      text: {
-        text: [responseText],
-      }
-    }]
-  };
+  const queryResult = dfReq.queryResult;
+  const session = dfReq.session;
 
-  return dfRes;
+  let response = createDialogflowWebhookResponse("I don't know how to handle this yet");
+  switch(classifyIntent(dfReq.queryResult.intent.displayName)) {
+    case 'confirm-address':
+      confirmAddressResponse(queryResult).then(
+        res => {
+          response = res;
+        }
+      )
+      break;
+    case 'predict-housing-type':
+      predictHousingTypeResponse(queryResult, session).then(
+        res => {
+          response = res;
+        }
+      );
+      break;
+    case 'get-landlord-info':
+      getLandlordInfoResponse(queryResult).then(
+        res => {
+          response = res;
+        }
+      );
+      break;
+    default:
+      break;
+  }
+  console.log("about to send response: ");
+  console.log(response)
+
+  return response;
 }
