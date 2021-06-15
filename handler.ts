@@ -81,7 +81,7 @@ async function fetchLandlordInfo(bbl: string): Promise<LandlordSearchResults> {
 }
 
 async function fetchHousingTypePrediction(bbl: string): Promise<HousingTypeResults> {
-  const url = new URL('https://wow-django.herokuapp.com/api/address/housingtype');
+  const url = new URL('replace this with connection to SQL database directly');
   url.searchParams.append('bbl', bbl);
   const res = await fetch(url);
   if (!res.ok) {
@@ -210,8 +210,6 @@ async function confirmAddressResponse(queryResult: QueryResult, session: string)
 
     // Save BBL in context as a parameter so future turns can use it.
     const bbl = feature.properties.pad_bbl;
-    console.log('found a bbl in the address confirmation process.');
-    console.log(`setting bbl ${bbl}`);
     outputContexts = [{
       "name": `${session}/contexts/address-confirmed`,
       "lifespanCount": 10, //see how many turns it'd take to get to the end of the convo and set this to that
@@ -233,17 +231,15 @@ async function predictHousingTypeResponse(queryResult: QueryResult, session: str
   let bbl = '';
   if (queryResult.outputContexts) {
     let context = queryResult.outputContexts?.find(i => i.name.endsWith(`/contexts/address-confirmed`));
-    if (context) {
-      bbl = context.parameters.get('bbl');
+    if (context && context.parameters && 'bbl' in context.parameters) {
+      bbl = context.parameters['bbl'];
     }
   }
 
-  console.log(`bbl is ${bbl}`);
   let text = "It doesn't look like your building has any rent regulated units.";
   let predictedHousingType = '';
   if (bbl) {
     predictedHousingType = (await fetchHousingTypePrediction(bbl)).result;
-    console.log(predictedHousingType);
     text = `Looks like you might live in ${predictedHousingType}`;
   }
 
@@ -261,44 +257,22 @@ async function predictHousingTypeResponse(queryResult: QueryResult, session: str
 
 
 export async function handleRequest(dfReq: DialogflowWebhookRequest): Promise<DialogflowWebhookResponse> {
-  console.log(dfReq.queryResult);
-
   const queryResult = dfReq.queryResult;
   const session = dfReq.session;
 
   let response = createDialogflowWebhookResponse("I don't know how to handle this yet, sorry!");
   switch(classifyIntent(dfReq.queryResult.intent.displayName)) {
     case 'confirm-address':
-      confirmAddressResponse(queryResult, session).then(
-        res => {
-          console.log('setting res: confirm address');
-          console.log(res);
-          response = res;
-        }
-      );
+      response = await confirmAddressResponse(queryResult, session);
       break;
     case 'predict-housing-type':
-      predictHousingTypeResponse(queryResult, session).then(
-        res => {
-          console.log('setting res: predict housing');
-          console.log(res);
-          response = res;
-        }
-      );
+      response = await predictHousingTypeResponse(queryResult, session)
       break;
     case 'get-landlord-info':
-      getLandlordInfoResponse(queryResult).then(
-        res => {
-          console.log('setting res: landlord info');
-          console.log(res);
-          response = res;
-        }
-      );
+      response = await getLandlordInfoResponse(queryResult);
       break;
     default:
-      console.log('not setting any res, will send default response')
       break;
   }
-
   return response;
 }
