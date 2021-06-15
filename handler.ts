@@ -1,4 +1,5 @@
 import { geoSearch, GeoSearchResults } from "@justfixnyc/geosearch-requester/commonjs";
+import { query } from "express";
 import fetch from "node-fetch";
 
 
@@ -29,7 +30,7 @@ export type QueryResult = {
 export type OutputContext = {
   name: string,
   lifespanCount: number,
-  parameters: {}
+  parameters: any,
 };
 
 export type DialogflowWebhookResponse = {
@@ -67,7 +68,7 @@ function splitBBL(bbl: string) {
 }
 
 async function fetchLandlordInfo(bbl: string): Promise<LandlordSearchResults> {
-  const url = new URL('https://wow-django.herokuapp.com/api/address');
+  const url = new URL('https://wow-django.herokuapp.com/api/address'); // move this to just querying SQL
   const params = splitBBL(bbl);
   url.searchParams.append('borough', params.boro);
   url.searchParams.append('block', params.block);
@@ -193,7 +194,7 @@ async function getLandlordInfoResponse(queryResult: QueryResult): Promise<Dialog
   return createDialogflowWebhookResponse(text);
 }
 
-async function confirmAddressResponse(queryResult: QueryResult): Promise<DialogflowWebhookResponse> {
+async function confirmAddressResponse(queryResult: QueryResult, session: string): Promise<DialogflowWebhookResponse> {
   const loc = queryResult.parameters.location;
   let addr = formatAddress(loc);
   const geoResult = await geoSearch(addr, {
@@ -201,26 +202,46 @@ async function confirmAddressResponse(queryResult: QueryResult): Promise<Dialogf
   });
 
   let text = "I couldn't find that address. Can you tell me your full street address (no apartment number), borough, and zip? e.g. '150 Court St, Brooklyn, 11201'";
+  let outputContexts: OutputContext[] = [];
   if (geoResult.features.length > 0) {
     const feature = geoResult.features[0];
     const addr = `${feature.properties.name}, ${feature.properties.borough}`;
     text = `I found ${addr}. Is that right?`
+
+    // Save BBL in context as a parameter so future turns can use it.
+    const bbl = feature.properties.pad_bbl;
+    console.log('found a bbl in the address confirmation process.');
+    console.log(`setting bbl ${bbl}`);
+    outputContexts = [{
+      "name": `${session}/contexts/address-confirmed`,
+      "lifespanCount": 10, //see how many turns it'd take to get to the end of the convo and set this to that
+      "parameters": {
+        "bbl": bbl
+      }
+    }];
   }
-  return createDialogflowWebhookResponse(text);
+  if (outputContexts.length > 0) {
+    return createDialogflowWebhookResponse(text, outputContexts);
+  }
+  else {
+    return createDialogflowWebhookResponse(text, outputContexts);
+  }
 }
 
+
 async function predictHousingTypeResponse(queryResult: QueryResult, session: string): Promise<DialogflowWebhookResponse> {
+  let bbl = '';
+  if (queryResult.outputContexts) {
+    let context = queryResult.outputContexts?.find(i => i.name.endsWith(`/contexts/address-confirmed`));
+    if (context) {
+      bbl = context.parameters.get('bbl');
+    }
+  }
+
+  console.log(`bbl is ${bbl}`);
   let text = "It doesn't look like your building has any rent regulated units.";
-
-  // TODO: Find a way to get the georesult, which should be the already-found & validated address, from
-  // the response to the last query (since when this gets called, the last thing the user has said is 'yes'
-  // to indicate the address we have for them is oK). Do we have to store it on the server side? That would make
-  // this stateful - which i guess is oK.
-
   let predictedHousingType = '';
-  if (geoResult.features.length > 0) {
-    const feature = geoResult.features[0];
-    const bbl = feature.properties.pad_bbl;
+  if (bbl) {
     predictedHousingType = (await fetchHousingTypePrediction(bbl)).result;
     console.log(predictedHousingType);
     text = `Looks like you might live in ${predictedHousingType}`;
@@ -241,31 +262,26 @@ async function predictHousingTypeResponse(queryResult: QueryResult, session: str
 
 export async function handleRequest(dfReq: DialogflowWebhookRequest): Promise<DialogflowWebhookResponse> {
   console.log(dfReq.queryResult);
-  if (dfReq.queryResult.outputContexts) {
-    for (let i = 0; i<dfReq.queryResult.outputContexts.length; i++) {
-      console.log(dfReq.queryResult.outputContexts[i].name);
-      console.log(' and the parameter value is ');
-      console.log(dfReq.queryResult.outputContexts[i].parameters);
-    }
-  }
-
-
 
   const queryResult = dfReq.queryResult;
   const session = dfReq.session;
 
-  let response = createDialogflowWebhookResponse("I don't know how to handle this yet");
+  let response = createDialogflowWebhookResponse("I don't know how to handle this yet, sorry!");
   switch(classifyIntent(dfReq.queryResult.intent.displayName)) {
     case 'confirm-address':
-      confirmAddressResponse(queryResult).then(
+      confirmAddressResponse(queryResult, session).then(
         res => {
+          console.log('setting res: confirm address');
+          console.log(res);
           response = res;
         }
-      )
+      );
       break;
     case 'predict-housing-type':
       predictHousingTypeResponse(queryResult, session).then(
         res => {
+          console.log('setting res: predict housing');
+          console.log(res);
           response = res;
         }
       );
@@ -273,15 +289,16 @@ export async function handleRequest(dfReq: DialogflowWebhookRequest): Promise<Di
     case 'get-landlord-info':
       getLandlordInfoResponse(queryResult).then(
         res => {
+          console.log('setting res: landlord info');
+          console.log(res);
           response = res;
         }
       );
       break;
     default:
+      console.log('not setting any res, will send default response')
       break;
   }
-  console.log("about to send response: ");
-  console.log(response)
 
   return response;
 }
